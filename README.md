@@ -18,11 +18,14 @@ go build -o bin/agent-bridge ./cmd/agent-bridge
 # 终端二，只读发现会话，或进入多选看板
 ./bin/agent-bridge discover
 ./bin/agent-bridge tui
+
+# 英文界面
+./bin/agent-bridge tui --lang en
 ```
 
 默认保存到 `~/.local/state/agent-bridge/`，尊重 `XDG_STATE_HOME`；也可在每次命令前指定 `--state-dir DIR`。默认 socket 位于该目录内，`--socket PATH` 可覆盖。daemon、SQLite 和凭据只对当前系统用户开放；这不是对同一系统用户下其他程序的隔离沙箱。
 
-TUI：方向键移动，空格多选，`/` 过滤，`g` 输入组名并确认创建，`t` 切换 tmux 许可，Tab 切换会话/组，`i` 创建邀请，`d` 在邀请确认页切换自动投递，`y` 确认、Esc 取消、`q` 退出。自动邀请会调用目标 agent，因此必须在确认页明确启用。
+TUI 保留中文和英文，默认中文；`tui --lang zh|en` 指定初始语言，浏览页或确认页按 `l` 即时切换。状态、心跳和确认提示随语言切换；会话名称、文件路径及原始诊断信息保留原文。方向键移动，空格多选，`/` 过滤，`g` 输入组名并确认创建，`t` 切换 tmux 许可，Tab 切换会话/组，`i` 创建邀请，`d` 在邀请确认页切换自动投递，`y` 确认、Esc 取消、`q` 退出。自动邀请会调用目标 agent，因此必须在确认页明确启用。
 
 ## 从发现到资料请求
 

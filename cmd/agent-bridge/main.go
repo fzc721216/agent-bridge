@@ -84,13 +84,26 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return local.RunDaemonAt(ctx, a.stateDir, a.socket)
 	}
 	if cmd == "tui" {
-		if len(rest) > 0 {
-			return fmt.Errorf("usage: agent-bridge [global flags] tui")
+		f := flag.NewFlagSet("tui", flag.ContinueOnError)
+		f.SetOutput(a.errOut)
+		language := f.String("lang", "zh", "interface language: zh (中文) or en (English)")
+		if err := f.Parse(rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if len(f.Args()) > 0 {
+			return fmt.Errorf("usage: agent-bridge [global flags] tui [--lang zh|en]")
+		}
+		parsedLanguage, err := tui.ParseLanguage(*language)
+		if err != nil {
+			return err
 		}
 		if a.credentialsPath != "" {
 			return fmt.Errorf("tui requires owner mode; omit --credentials")
 		}
-		return tui.Run(ctx, local.Client{Socket: a.socket})
+		return tui.RunWithLanguage(ctx, local.Client{Socket: a.socket}, parsedLanguage)
 	}
 	credentials, err := a.credentials()
 	if err != nil {
@@ -254,7 +267,7 @@ Owner commands:
   daemon                                      Run local broker (foreground)
   discover [--json]                            Discover sessions and capabilities
   status [--json]                              Show group/member state
-  tui                                         Select sessions and watch live state
+  tui [--lang zh|en]                           Bilingual session picker (default: zh; l switches)
   group create NAME --members ID,ID [--allow-tmux] [--yes]
   group list | members GROUP | remove GROUP SESSION [--yes] | watch GROUP
   invite GROUP SESSION [--deliver] [--yes]      Write private credentials; optionally notify

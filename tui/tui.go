@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	bridge "github.com/fuzicheng/agent-bridge"
 	"github.com/fuzicheng/agent-bridge/local"
 )
@@ -31,6 +32,7 @@ const (
 type model struct {
 	ctx            context.Context
 	client         caller
+	language       Language
 	snapshot       local.Snapshot
 	events         []bridge.Event
 	eventsGroup    string
@@ -46,7 +48,7 @@ type model struct {
 	busy           bool
 	width          int
 	height         int
-	notice         string
+	notice         func(model) string
 	err            error
 }
 
@@ -64,8 +66,14 @@ type created struct {
 
 type invited struct {
 	paths    []string
-	delivery []string
+	delivery []invitationDelivery
 	err      error
+}
+
+type invitationDelivery struct {
+	sessionID string
+	accepted  bool
+	err       string
 }
 
 type tick time.Time
@@ -73,13 +81,23 @@ type tick time.Time
 // Run connects to an already-running daemon. Administrative mutations occur only
 // after a separate confirmation screen; selecting a session performs no writes.
 func Run(ctx context.Context, client local.Client) error {
+	return RunWithLanguage(ctx, client, Chinese)
+}
+
+// RunWithLanguage selects the initial UI language; l toggles it while running.
+func RunWithLanguage(ctx context.Context, client local.Client, language Language) error {
+	language, err := ParseLanguage(string(language))
+	if err != nil {
+		return err
+	}
 	m := newModel(ctx, client)
-	_, err := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen()).Run()
+	m.language = language
+	_, err = tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen()).Run()
 	return err
 }
 
 func newModel(ctx context.Context, client caller) model {
-	return model{ctx: ctx, client: client, selected: make(map[string]bool), width: 100, height: 35}
+	return model{ctx: ctx, client: client, language: Chinese, selected: make(map[string]bool), width: 100, height: 35}
 }
 
 func nextTick() tea.Cmd {
@@ -149,7 +167,7 @@ func (m model) visibleSessions() []bridge.Session {
 	q := strings.ToLower(m.filter)
 	result := make([]bridge.Session, 0, len(m.snapshot.Sessions))
 	for _, s := range m.snapshot.Sessions {
-		if q == "" || strings.Contains(strings.ToLower(string(s.Provider)+" "+s.ID+" "+s.Name+" "+s.CWD+" "+string(s.Status)), q) {
+		if q == "" || strings.Contains(strings.ToLower(string(s.Provider)+" "+s.ID+" "+s.Name+" "+s.CWD+" "+string(s.Status)+" "+m.statusText(s.Status)+" "+m.transportText(s.Capabilities.Transport)), q) {
 			result = append(result, s)
 		}
 	}
@@ -198,16 +216,12 @@ func (m model) invite() tea.Cmd {
 			}
 			err := m.client.Call(ctx, "invite", map[string]any{"group_id": groupID, "session_id": id, "deliver": deliver}, nil, &response)
 			if err != nil {
-				result.err = fmt.Errorf("invitation for %s failed: %w", id, err)
+				result.err = fmt.Errorf(m.tr("invitation for %s failed: %w"), id, err)
 				return result
 			}
 			result.paths = append(result.paths, id+": "+response.CredentialsPath)
 			if deliver {
-				status := "notification accepted; waiting for join"
-				if !response.Delivered {
-					status = "not delivered: " + response.Error
-				}
-				result.delivery = append(result.delivery, id+": "+status)
+				result.delivery = append(result.delivery, invitationDelivery{sessionID: id, accepted: response.Delivered, err: response.Error})
 			}
 		}
 		return result
@@ -243,17 +257,27 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.snapshot.Groups = append(m.snapshot.Groups, msg.group)
 			m.groupCursor, m.focus = len(m.snapshot.Groups)-1, 1
 			m.selected = make(map[string]bool)
-			m.notice = "Created group " + msg.group.Name + ". Press i to review invitations."
+			m.notice = func(view model) string {
+				return fmt.Sprintf(view.tr("Created group %s. Press i to review invitations."), msg.group.Name)
+			}
 			return m, m.refresh(false)
 		}
 	case invited:
 		m.busy, m.mode, m.err = false, browse, msg.err
-		m.notice = "Private credentials written (share each invitation only with its member):\n" + strings.Join(msg.paths, "\n")
-		if len(msg.delivery) != 0 {
-			m.notice += "\n" + strings.Join(msg.delivery, "\n")
-		}
-		if !m.deliverInvites {
-			m.notice += "\nUse CLI invite output for the full join instructions; no notification was sent."
+		manual := !m.deliverInvites
+		m.notice = func(view model) string {
+			text := view.tr("Private credentials written (share each invitation only with its member):\n") + strings.Join(msg.paths, "\n")
+			for _, delivery := range msg.delivery {
+				status := view.tr("notification accepted; waiting for join")
+				if !delivery.accepted {
+					status = view.tr("not delivered: ") + delivery.err
+				}
+				text += "\n" + delivery.sessionID + ": " + status
+			}
+			if manual {
+				text += view.tr("\nUse CLI invite output for the full join instructions; no notification was sent.")
+			}
+			return text
 		}
 		return m, m.refresh(false)
 	case tea.KeyMsg:
@@ -262,6 +286,15 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if m.busy {
+			return m, nil
+		}
+		if key == "l" && m.mode != nameInput && m.mode != filterInput {
+			if m.language == English {
+				m.language = Chinese
+			} else {
+				m.language = English
+			}
+			m.clamp()
 			return m, nil
 		}
 		if m.mode == nameInput || m.mode == filterInput {
@@ -358,7 +391,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			m.allowTmux = !m.allowTmux
 		case "r":
-			m.notice = "Discovering local sessions…"
+			m.notice = func(view model) string { return view.tr("Discovering local sessions…") }
 			return m, m.refresh(true)
 		case "g":
 			if len(m.selectedIDs()) == 0 {
@@ -402,35 +435,35 @@ func popRune(s string) string {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString("agent-bridge  •  local agent-bridge/1 protocol\n")
-	b.WriteString("Tab panel · ↑/↓ move · Space select · / filter · g create · t tmux consent · i invite · r discover · q quit\n")
-	fmt.Fprintf(&b, "Filter: %s   Selected: %d   tmux delivery consent for new group: %t\n", clean(m.filter), len(m.selectedIDs()), m.allowTmux)
+	b.WriteString(m.tr("agent-bridge  •  local agent-bridge/1 protocol\n"))
+	b.WriteString(m.tr("Tab panel · ↑/↓ move · Space select · / filter · g create · t tmux consent · i invite · r discover · l language · q quit\n"))
+	fmt.Fprintf(&b, m.tr("Filter: %s   Selected: %d   tmux delivery consent for new group: %s\n"), clean(m.filter), len(m.selectedIDs()), m.boolText(m.allowTmux))
 	if m.mode == nameInput {
-		fmt.Fprintf(&b, "Group name: %s█  (Enter review, Esc cancel)\n", clean(m.name))
+		fmt.Fprintf(&b, m.tr("Group name: %s█  (Enter review, Esc cancel)\n"), clean(m.name))
 	}
 	if m.mode == filterInput {
-		b.WriteString("Type filter, Enter done, Esc back\n")
+		b.WriteString(m.tr("Type filter, Enter done, Esc back\n"))
 	}
 	if m.mode == confirmCreate {
-		fmt.Fprintf(&b, "\nCreate group %q with these members?\n", clean(m.name))
+		fmt.Fprintf(&b, m.tr("\nCreate group %q with these members?\n"), clean(m.name))
 		for _, id := range m.selectedIDs() {
 			fmt.Fprintf(&b, "  %s\n", clean(id))
 		}
-		fmt.Fprintf(&b, "tmux message injection allowed: %t\nPress y to create, n/Esc to cancel.\n", m.allowTmux)
+		fmt.Fprintf(&b, m.tr("tmux message injection allowed: %s\nPress y to create, n/Esc to cancel.\n"), m.boolText(m.allowTmux))
 	} else if m.mode == confirmInvite {
-		fmt.Fprintf(&b, "\nInvite all members of group %s? Existing credentials will be rotated.\n", clean(m.groupID()))
+		fmt.Fprintf(&b, m.tr("\nInvite all members of group %s? Existing credentials will be rotated.\n"), clean(m.groupID()))
 		for _, member := range m.snapshot.Members {
 			if member.GroupID == m.groupID() {
-				fmt.Fprintf(&b, "  %s  transport=%s  joined=%t\n", clean(member.Session.ID), member.Session.Capabilities.Transport, member.Joined)
+				fmt.Fprintf(&b, m.tr("  %s  transport=%s  joined=%s\n"), clean(member.Session.ID), m.transportText(member.Session.Capabilities.Transport), m.boolText(member.Joined))
 			}
 		}
-		fmt.Fprintf(&b, "Deliver invitations through provider/tmux: %t (d toggles).\nPress y to write credentials%s, n/Esc to cancel.\n", m.deliverInvites, map[bool]string{true: " and deliver notifications", false: " only"}[m.deliverInvites])
+		fmt.Fprintf(&b, m.tr("Deliver invitations through provider/tmux: %s (d toggles).\nPress y to write credentials%s, n/Esc to cancel.\n"), m.boolText(m.deliverInvites), m.tr(map[bool]string{true: " and deliver notifications", false: " only"}[m.deliverInvites]))
 	} else {
 		b.WriteString("\n")
 		if m.focus == 0 {
-			b.WriteString("> SESSIONS\n")
+			b.WriteString("> " + m.tr("SESSIONS") + "\n")
 		} else {
-			b.WriteString("  SESSIONS\n")
+			b.WriteString("  " + m.tr("SESSIONS") + "\n")
 		}
 		sessions := m.visibleSessions()
 		rowLimit := max(3, min(12, (m.height-16)/2))
@@ -444,22 +477,22 @@ func (m model) View() string {
 			if m.selected[s.ID] {
 				selected = "x"
 			}
-			activity := "saved"
+			activity := m.tr("saved")
 			if s.Active {
-				activity = "live"
+				activity = m.tr("live")
 			}
-			fmt.Fprintf(&b, "%s[%s] %-6s %-5s %-8s %-12s %s  %s\n", cursor, selected, s.Provider, activity, s.Status, s.Capabilities.Transport, short(s.ID, 22), short(s.Name+" "+s.CWD, max(12, m.width-72)))
+			fmt.Fprintf(&b, "%s[%s] %s %s %s %s %s  %s\n", cursor, selected, padded(string(s.Provider), 6), padded(activity, 5), padded(m.statusText(s.Status), 8), padded(m.transportText(s.Capabilities.Transport), 12), short(s.ID, 22), short(s.Name+" "+s.CWD, max(12, m.width-72)))
 		}
 		if len(sessions) == 0 {
-			b.WriteString("  No sessions. Press r to discover; daemon warnings appear below.\n")
+			b.WriteString(m.tr("  No sessions. Press r to discover; daemon warnings appear below.\n"))
 		}
 		if len(sessions) > rowLimit {
-			fmt.Fprintf(&b, "  %d sessions total; scroll to see more\n", len(sessions))
+			fmt.Fprintf(&b, m.tr("  %d sessions total; scroll to see more\n"), len(sessions))
 		}
 		if m.focus == 1 {
-			b.WriteString("\n> GROUPS\n")
+			b.WriteString("\n> " + m.tr("GROUPS") + "\n")
 		} else {
-			b.WriteString("\n  GROUPS\n")
+			b.WriteString("\n  " + m.tr("GROUPS") + "\n")
 		}
 		groupStart := max(0, m.groupCursor-3)
 		for i := groupStart; i < min(len(m.snapshot.Groups), groupStart+4); i++ {
@@ -471,40 +504,43 @@ func (m model) View() string {
 			fmt.Fprintf(&b, "%s %s  %s\n", cursor, short(g.ID, 36), short(g.Name, max(12, m.width-42)))
 		}
 		if len(m.snapshot.Groups) == 0 {
-			b.WriteString("  No groups. Select sessions, then press g.\n")
+			b.WriteString(m.tr("  No groups. Select sessions, then press g.\n"))
 		}
 		for _, member := range m.snapshot.Members {
 			if member.GroupID == m.groupID() {
-				joined := "needs-join"
+				joined := m.tr("needs-join")
 				if member.Joined {
-					joined = "joined"
+					joined = m.tr("joined")
 				}
-				heartbeat := "no heartbeat"
+				heartbeat := m.tr("Not connected: waiting for join")
+				if member.Joined {
+					heartbeat = m.tr("No heartbeat received")
+				}
 				if !member.LastHeartbeat.IsZero() {
-					heartbeat = "heartbeat " + max(time.Duration(0), time.Since(member.LastHeartbeat)).Round(time.Second).String() + " ago"
+					heartbeat = fmt.Sprintf(m.tr("Last heartbeat: %s ago"), m.durationText(time.Since(member.LastHeartbeat)))
 				}
-				fmt.Fprintf(&b, "  %-12s %-10s %-8s %s\n", short(member.Session.Name, 12), joined, member.State.Status, short(member.State.Task+" "+member.State.Summary, max(12, m.width-38)))
-				fmt.Fprintf(&b, "    %s; knows: %s\n", heartbeat, short(strings.Join(member.State.Topics, ", "), max(12, m.width-40)))
+				fmt.Fprintf(&b, "  %s %s %s %s\n", padded(member.Session.Name, 12), padded(joined, 10), padded(m.statusText(member.State.Status), 8), short(member.State.Task+" "+member.State.Summary, max(12, m.width-38)))
+				fmt.Fprintf(&b, m.tr("    %s; knows: %s\n"), heartbeat, short(strings.Join(member.State.Topics, ", "), max(12, m.width-40)))
 			}
 		}
 		if len(m.events) != 0 {
-			b.WriteString("Recent group events (delivery accepted does not imply read):\n")
+			b.WriteString(m.tr("Recent group events (delivery accepted does not imply read):\n"))
 			for _, event := range m.events[max(0, len(m.events)-3):] {
-				fmt.Fprintf(&b, "  #%d %s %s\n", event.ID, short(event.Type, 28), short(event.SessionID, 32))
+				fmt.Fprintf(&b, "  #%d %s %s\n", event.ID, short(m.eventText(event.Type), 28), short(event.SessionID, 32))
 			}
 		}
 	}
 	if m.busy {
-		b.WriteString("\nWorking…\n")
+		b.WriteString(m.tr("\nWorking…\n"))
 	}
 	if m.err != nil {
-		fmt.Fprintf(&b, "\nError: %s\n", clean(m.err.Error()))
+		fmt.Fprintf(&b, m.tr("\nError: %s\n"), clean(m.tr(m.err.Error())))
 	}
-	if m.notice != "" {
-		fmt.Fprintf(&b, "\n%s\n", clean(m.notice))
+	if m.notice != nil {
+		fmt.Fprintf(&b, "\n%s\n", clean(m.notice(m)))
 	}
 	for _, warning := range m.snapshot.Warnings {
-		fmt.Fprintf(&b, "Warning: %s\n", short(warning, m.width))
+		fmt.Fprintf(&b, m.tr("Warning: %s\n"), short(warning, m.width))
 	}
 	return b.String()
 }
@@ -524,15 +560,24 @@ func clean(s string) string {
 
 func short(s string, width int) string {
 	s = strings.ReplaceAll(strings.ReplaceAll(clean(s), "\n", " "), "\t", " ")
-	r := []rune(s)
 	if width < 1 {
 		return ""
 	}
-	if len(r) <= width {
-		return s
+	return ansi.Truncate(s, width, "…")
+}
+
+func padded(s string, width int) string {
+	s = short(s, width)
+	return s + strings.Repeat(" ", max(0, width-ansi.StringWidth(s)))
+}
+
+func (m model) durationText(d time.Duration) string {
+	seconds := int64(max(time.Duration(0), d).Round(time.Second) / time.Second)
+	if seconds < 60 {
+		return fmt.Sprintf(m.tr("%ds"), seconds)
 	}
-	if width == 1 {
-		return "…"
+	if seconds < 3600 {
+		return fmt.Sprintf(m.tr("%dm %ds"), seconds/60, seconds%60)
 	}
-	return string(r[:width-1]) + "…"
+	return fmt.Sprintf(m.tr("%dh %dm"), seconds/3600, seconds%3600/60)
 }
