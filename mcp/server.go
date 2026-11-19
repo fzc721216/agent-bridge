@@ -290,7 +290,7 @@ func tools() []tool {
 		{Name: "peers", Description: "List only members of your selected group, their published task/topics, status and capabilities. Use this to find an agent with relevant knowledge.", InputSchema: schema(map[string]any{})},
 		{Name: "ask", Description: "Request information from a selected peer. Returns immediately with a request ID; queued does not mean read or answered. Check inbox/request_status later and continue independent work. Do not recursively forward peer requests.", InputSchema: schema(map[string]any{
 			"to": str("Exact peer session ID from peers."), "body": str("Concrete question and the information needed."),
-			"ttl_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400, "description": "Optional expiry; default 900 seconds."},
+			"ttl_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": 86400, "description": "Optional expiry; default 900 seconds."},
 			"idempotency_key": str("Optional key to avoid duplicate requests on retry."),
 		}, "to", "body")},
 		{Name: "inbox", Description: "Read your pending requests and replies; reading acknowledges receipt. Reply to a request with sources, but do not reply to replies or acknowledgements.", InputSchema: schema(map[string]any{})},
@@ -300,7 +300,7 @@ func tools() []tool {
 		{Name: "request_status", Description: "Check a request you sent or received without blocking. Accepted transport delivery does not establish that an agent read it; answered requests have an associated reply.", InputSchema: schema(map[string]any{"request_id": str("Request ID returned by ask or inbox.")}, "request_id")},
 		{Name: "publish_state", Description: "Publish your current task, concise progress summary and knowledge topics to your selected peers. Publish on start/change/block/completion; heartbeats alone do not indicate progress.", InputSchema: schema(map[string]any{
 			"status": map[string]any{"type": "string", "enum": []string{"unknown", "idle", "working", "blocked", "done", "stale"}},
-			"task": str("Current task."), "summary": str("Concise progress or blocker."), "topics": stringsSchema("Documents, systems or subject areas you can answer questions about."),
+			"task":   str("Current task."), "summary": str("Concise progress or blocker."), "topics": stringsSchema("Documents, systems or subject areas you can answer questions about."),
 		}, "status")},
 		{Name: "heartbeat", Description: "Report that this member is reachable. This does not change your published task or prove work is progressing.", InputSchema: schema(map[string]any{})},
 	}

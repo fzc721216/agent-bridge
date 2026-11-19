@@ -98,7 +98,7 @@ agent A 使用 `inbox` 获取回答正文和来源，或用 `request-status REQU
 - `state=answered`：原接收者提交了关联回复。
 - `expired/failed`：过期或成员移除等终止原因。通知失败保留独立的 `delivery` 和错误字段，消息仍可由 inbox 获取。
 - daemon 崩溃时仍处于 `sending` 的投递恢复为 `unknown`；不盲目重发可能已经进入 provider 队列的通知。
-- 心跳只表示通信仍在活动。任务状态和摘要由 agent 显式发布；两分钟没有心跳会显示 stale，心跳不会把旧任务误恢复为 working。
+- 心跳只表示通信仍在活动。任务状态和摘要由 agent 显式发布；两分钟没有任务状态更新时，未完成的任务摘要会显示 stale。最后心跳单独展示，心跳不会把旧任务误恢复为 working。
 
 默认请求 TTL 为 15 分钟，最大 24 小时；正文上限 64 KiB，收件箱有容量和分页限制。可用 `--idempotency-key KEY` 避免同一发送者重复创建相同请求。通信组、令牌散列、消息和事件保存于 SQLite；消息正文留在本地数据库中。
 
@@ -131,5 +131,7 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/agent-bridge-darwin-arm64
 ```
 
 测试使用 fixture 和模拟的 provider 可执行文件，不调用真实模型。真实会话仅做只读发现；消息的真实 agent 理解和自动回复需要用户选择并实际接入会话后验证。验证结果见 [验证记录](docs/VALIDATION.md)。
+
+进程测试需要 `python3`。完整模拟演示可运行 `python3 scripts/smoke.py`，它使用隔离的 provider 目录和模拟进程，验证从 CLI 建组、agent 握手、自动请求/回答到 daemon 重启恢复的完整流程。
 
 参考：[A2A 规范](https://a2a-protocol.org/latest/specification/)、[A2A Go SDK](https://github.com/a2aproject/a2a-go)、[OpenAI Docs：Codex app-server](https://developers.openai.com/codex/app-server)。
